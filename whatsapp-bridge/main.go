@@ -295,6 +295,12 @@ func ensureMessageStoreSchema(db *sql.DB) error {
 	if err := ensureColumn(db, "messages", "quoted_message_id", "TEXT"); err != nil {
 		return fmt.Errorf("failed to ensure messages.quoted_message_id column: %w", err)
 	}
+	if err := ensureColumn(db, "messages", "edited_at", "TIMESTAMP"); err != nil {
+		return fmt.Errorf("failed to ensure messages.edited_at column: %w", err)
+	}
+	if err := ensureColumn(db, "messages", "original_content", "TEXT"); err != nil {
+		return fmt.Errorf("failed to ensure messages.original_content column: %w", err)
+	}
 	return nil
 }
 
@@ -971,6 +977,23 @@ func (store *MessageStore) MarkMessageDeleted(messageID, chatJID string, deleted
 	return err
 }
 
+// MarkMessageEdited applies a MESSAGE_EDIT to the target row: content becomes
+// the new text, edited_at the edit time, and original_content keeps the text
+// as first received (set once, so several edits still keep the first version).
+// Edits older than one already applied are ignored. Unknown targets are a
+// silent no-op, like MarkMessageDeleted. edited_at is stored in UTC so the
+// TEXT comparison orders instants correctly across UTC-offset (DST) changes.
+func (store *MessageStore) MarkMessageEdited(messageID, chatJID, newContent string, editedAt time.Time) error {
+	editedAt = editedAt.UTC()
+	_, err := store.db.Exec(
+		`UPDATE messages SET original_content = COALESCE(original_content, content),
+		   content = ?, edited_at = ?
+		 WHERE id = ? AND chat_jid = ? AND (edited_at IS NULL OR edited_at <= ?)`,
+		newContent, editedAt, messageID, chatJID, editedAt,
+	)
+	return err
+}
+
 // Get messages from a chat
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, error) {
 	rows, err := store.db.Query(
@@ -1459,6 +1482,26 @@ func handleMessageRevoke(messageStore *MessageStore, msg *waProto.Message, chatJ
 	deletedAt := time.Unix(eventTimestamp, 0)
 	if err := messageStore.MarkMessageDeleted(targetID, chatJID, deletedAt); err != nil {
 		logger.Warnf("Failed to mark message %s in %s as deleted: %v", targetID, chatJID, err)
+	}
+}
+
+// handleMessageEdit records a MESSAGE_EDIT (the sender changed a message
+// after sending it) on the target row, keeping the original text. Edits
+// arrive as a ProtocolMessage, possibly inside an EditedMessage wrapper that
+// whatsmeow has already unwrapped; their own content is empty, so without
+// this the edit was dropped and the store kept only the first version.
+func handleMessageEdit(messageStore *MessageStore, msg *waProto.Message, chatJID string, eventTimestamp int64, logger waLog.Logger) {
+	protoMsg := msg.GetProtocolMessage()
+	if protoMsg == nil || protoMsg.GetType() != waProto.ProtocolMessage_MESSAGE_EDIT {
+		return
+	}
+	targetID := protoMsg.GetKey().GetID()
+	newContent := extractTextContent(protoMsg.GetEditedMessage())
+	if targetID == "" || newContent == "" {
+		return
+	}
+	if err := messageStore.MarkMessageEdited(targetID, chatJID, newContent, time.Unix(eventTimestamp, 0)); err != nil {
+		logger.Warnf("Failed to record edit of message %s in %s: %v", targetID, chatJID, err)
 	}
 }
 
@@ -2083,6 +2126,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// inbound reactions, flag it unread — without any new message to show.
 	updateChatEphemeralSettingsFromProtocolMessage(messageStore, chatJID, msg.Message, msg.Info.Timestamp.Unix(), logger)
 	handleMessageRevoke(messageStore, msg.Message, chatJID, msg.Info.Timestamp.Unix(), logger)
+	handleMessageEdit(messageStore, msg.Message, chatJID, msg.Info.Timestamp.Unix(), logger)
 
 	// Backfill ephemeral state from any regular message's ContextInfo.
 	// EPHEMERAL_SETTING ProtocolMessages and GroupInfo events only fire on
