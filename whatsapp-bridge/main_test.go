@@ -108,6 +108,8 @@ func newTestMessageStore(t *testing.T) *MessageStore {
 			file_length INTEGER,
 			deleted_at TIMESTAMP,
 			quoted_message_id TEXT,
+			edited_at TIMESTAMP,
+			original_content TEXT,
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
@@ -3269,5 +3271,56 @@ func TestRenderPairingQRCodes_Outcomes(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s: outcome = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// editEvent builds an inbound MESSAGE_EDIT for targetID, as whatsmeow hands it
+// over after unwrapping the EditedMessage wrapper.
+func editEvent(targetID, text string, ts time.Time) *events.Message {
+	editType := waProto.ProtocolMessage_MESSAGE_EDIT
+	return &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: phonePN, Sender: phonePN},
+			ID:            "edit-" + targetID + ts.String(),
+			Timestamp:     ts,
+		},
+		Message: &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{
+			Type: &editType,
+			Key: &waCommon.MessageKey{RemoteJID: proto.String(phonePN.String()), ID: proto.String(targetID),
+				FromMe: proto.Bool(false)},
+			EditedMessage: &waProto.Message{Conversation: proto.String(text)},
+		}},
+		IsEdit: true,
+	}
+}
+
+func TestHandleMessage_EditUpdatesContentAndKeepsOriginal(t *testing.T) {
+	client := newTestClient(&mockLIDStore{})
+	ms := newTestMessageStore(t)
+	chatJID := phonePN.String()
+	targetID := "3AEDIT0001"
+	if _, err := ms.db.Exec(
+		`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)`,
+		targetID, chatJID, phonePN.User, "see you at 10", time.Unix(1710000000, 0), false,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	handleMessage(client, ms, editEvent(targetID, "see you at 11", time.Unix(1710000020, 0)), testLogger())
+	handleMessage(client, ms, editEvent(targetID, "see you at 12", time.Unix(1710000040, 0)), testLogger())
+	handleMessage(client, ms, editEvent(targetID, "stale edit", time.Unix(1710000030, 0)), testLogger())
+
+	var content, original string
+	var editedAt time.Time
+	if err := ms.db.QueryRow(
+		"SELECT content, original_content, edited_at FROM messages WHERE id = ? AND chat_jid = ?", targetID, chatJID,
+	).Scan(&content, &original, &editedAt); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if content != "see you at 12" || original != "see you at 10" || !editedAt.Equal(time.Unix(1710000040, 0)) {
+		t.Fatalf("got content=%q original=%q edited_at=%v", content, original, editedAt)
+	}
+	var n int
+	if err := ms.db.QueryRow("SELECT COUNT(*) FROM messages WHERE chat_jid = ?", chatJID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("an edit must not add a row of its own: %d rows (%v)", n, err)
 	}
 }
