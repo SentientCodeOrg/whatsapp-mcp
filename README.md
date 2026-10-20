@@ -968,6 +968,7 @@ flowchart LR
         READ["/api/mark-read"]
         DOWN["/api/download"]
         REACT["/api/react"]
+        EDIT["/api/edit, /api/revoke<br/>(own messages)"]
         TYPE["/api/typing"]
         HIST["/api/history"]
         HEALTH["/api/health"]
