@@ -3326,7 +3326,7 @@ func TestOutboundMediaRow_PopulatedUpload_SatisfiesRedownloadCheck(t *testing.T)
 		FileLength:    30524,
 	}
 
-	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := outboundMediaRow("/tmp/wa-test/test-sticker.webp", upload)
+	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := outboundMediaRow("/tmp/wa-test/test-sticker.webp", upload, false)
 
 	if mediaType != "image" {
 		t.Errorf("mediaType = %q, want %q", mediaType, "image")
@@ -3380,7 +3380,7 @@ func TestOutboundMediaRow_PreservesMetadataForAllMediaTypes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.mediaType, func(t *testing.T) {
-			gotType, _, gotURL, gotKey, gotSHA, gotEncSHA, gotLength := outboundMediaRow(tc.path, upload)
+			gotType, _, gotURL, gotKey, gotSHA, gotEncSHA, gotLength := outboundMediaRow(tc.path, upload, false)
 			if gotType != tc.mediaType {
 				t.Errorf("mediaType = %q, want %q", gotType, tc.mediaType)
 			}
@@ -3401,7 +3401,7 @@ func TestOutboundMediaRow_PreservesMetadataForAllMediaTypes(t *testing.T) {
 // inline behavior exactly — no ambiguity between "no media" and "upload
 // returned an empty value".
 func TestOutboundMediaRow_EmptyMediaPath_ReturnsEmpty(t *testing.T) {
-	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := outboundMediaRow("", whatsmeow.UploadResponse{})
+	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := outboundMediaRow("", whatsmeow.UploadResponse{}, false)
 
 	if mediaType != "" || filename != "" {
 		t.Errorf("expected empty mediaType/filename for mediaPath=\"\", got mediaType=%q filename=%q", mediaType, filename)
@@ -3650,5 +3650,20 @@ func TestHandleMessage_EditUpdatesContentAndKeepsOriginal(t *testing.T) {
 	var n int
 	if err := ms.db.QueryRow("SELECT COUNT(*) FROM messages WHERE chat_jid = ?", chatJID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("an edit must not add a row of its own: %d rows (%v)", n, err)
+	}
+}
+
+// A photo sent as a document is uploaded with the document keys, so its stored
+// row must say "document" or download_media would decrypt it as an image.
+func TestOutboundMediaRow_AsDocumentStoresDocumentType(t *testing.T) {
+	upload := whatsmeow.UploadResponse{URL: "u", MediaKey: []byte{1}, FileSHA256: []byte{2}, FileEncSHA256: []byte{3}, FileLength: 4}
+	if got, _, _, _, _, _, _ := outboundMediaRow("/tmp/photo.jpg", upload, true); got != "document" {
+		t.Fatalf("as_document photo stored as %q, want document", got)
+	}
+	if got, _, _, _, _, _, _ := outboundMediaRow("/tmp/photo.jpg", upload, false); got != "image" {
+		t.Fatalf("photo stored as %q, want image", got)
+	}
+	if got, _, _, _, _, _, _ := outboundMediaRow("/tmp/song.ogg", upload, true); got != "audio" {
+		t.Fatalf("as_document only applies to photos and videos, got %q", got)
 	}
 }

@@ -1308,6 +1308,9 @@ type SendMessageRequest struct {
 	// text must contain a matching "@<number>" token for each entry, or the
 	// mention won't render on recipients' devices.
 	Mentions []string `json:"mentions,omitempty"`
+	// AsDocument sends a photo or video as a file (no WhatsApp compression), like the app's
+	// «Document» option. Ignored for other media and for text messages.
+	AsDocument bool `json:"as_document,omitempty"`
 }
 
 // MarkReadRequest is the request body for the /api/mark-read endpoint.
@@ -1364,11 +1367,15 @@ func classifyMediaPath(mediaPath string) (whatsmeow.MediaType, string, string) {
 // metadata downloadMedia needs to redownload it later. Returns zero values
 // for a plain text message (mediaPath == ""). Split out as its own function
 // so it's unit-testable without a live whatsmeow.Client.
-func outboundMediaRow(mediaPath string, upload whatsmeow.UploadResponse) (mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
+func outboundMediaRow(mediaPath string, upload whatsmeow.UploadResponse, asDocument bool) (mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
 	if mediaPath == "" {
 		return "", "", "", nil, nil, nil, 0
 	}
 	_, _, mediaType = classifyMediaPath(mediaPath)
+	if asDocument && (mediaType == "image" || mediaType == "video") {
+		// uploaded with the document keys: download_media must decrypt it as one
+		mediaType = "document"
+	}
 	filename = filepath.Base(mediaPath)
 	return mediaType, filename, upload.URL, upload.MediaKey, upload.FileSHA256, upload.FileEncSHA256, upload.FileLength
 }
@@ -1603,7 +1610,7 @@ func resolveMentionJIDs(client *whatsmeow.Client, mentions []string) []string {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMsgID string, quotedSenderJID string, quotedContent string, mentions []string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMsgID string, quotedSenderJID string, quotedContent string, mentions []string, asDocument bool) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -1651,6 +1658,9 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		}
 
 		mediaType, mimeType, _ := classifyMediaPath(mediaPath)
+		if asDocument && (mediaType == whatsmeow.MediaImage || mediaType == whatsmeow.MediaVideo) {
+			mediaType = whatsmeow.MediaDocument // the original file, uncompressed
+		}
 
 		// Upload media to WhatsApp servers
 		upload, err = client.Upload(context.Background(), mediaData, mediaType)
@@ -1819,7 +1829,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			timestamp = time.Now()
 		}
 
-		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := outboundMediaRow(mediaPath, upload)
+		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := outboundMediaRow(mediaPath, upload, asDocument)
 
 		// Pass empty name so StoreChat preserves any existing resolved
 		// contact/group name; we don't have one available here and
@@ -2646,7 +2656,7 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 			req.Recipient, len(req.Message), resolvedMediaPath != "")
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, resolvedMediaPath, req.QuotedMessageID, req.QuotedSenderJID, req.QuotedContent, req.Mentions)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, resolvedMediaPath, req.QuotedMessageID, req.QuotedSenderJID, req.QuotedContent, req.Mentions, req.AsDocument)
 		fmt.Printf("← /api/send success=%v status=%q\n", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
