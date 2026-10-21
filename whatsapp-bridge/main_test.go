@@ -3670,40 +3670,47 @@ func (s secretStore) GetMessageSecret(_ context.Context, _, sender types.JID, _ 
 	return s.secret, sender, nil
 }
 
-// secretEditEvent encrypts an edit of our own message targetID the way
-// current phone clients send it: a SecretEncryptedMessage of type
-// MESSAGE_EDIT, keyed on the original message's secret.
-func secretEditEvent(t *testing.T, secret []byte, targetID, text string, ts time.Time) *events.Message {
+// secretEditEvent encrypts an edit of targetID the way current phone clients
+// send it: a SecretEncryptedMessage of type MESSAGE_EDIT, keyed on the
+// original message's secret. fromMe: our own message, edited on our phone;
+// otherwise the peer edits theirs. The key derivation mirrors whatsmeow's
+// generateMsgSecretKey (original id + original sender + editor + use case).
+func secretEditEvent(t *testing.T, secret []byte, targetID string, fromMe bool, edited *waE2E.Message, ts time.Time) *events.Message {
 	t.Helper()
+	sender := phonePN
+	if fromMe {
+		sender = selfPhone
+	}
+	key := &waCommon.MessageKey{RemoteJID: proto.String(phonePN.String()), FromMe: proto.Bool(fromMe), ID: proto.String(targetID)}
 	plaintext, err := proto.Marshal(&waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{
-		Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
-		Key:           &waCommon.MessageKey{RemoteJID: proto.String(phonePN.String()), FromMe: proto.Bool(true), ID: proto.String(targetID)},
-		EditedMessage: &waE2E.Message{Conversation: proto.String(text)},
+		Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(), Key: key, EditedMessage: edited,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sender := selfPhone.ToNonAD().String()
-	key := hkdfutil.SHA256(secret, nil, []byte(targetID+sender+sender+"Message Edit"), 32)
+	s := sender.ToNonAD().String()
+	aesKey := hkdfutil.SHA256(secret, nil, []byte(targetID+s+s+"Message Edit"), 32)
 	iv := bytes.Repeat([]byte{7}, 12)
-	payload, err := gcmutil.Encrypt(key, iv, plaintext, nil)
+	payload, err := gcmutil.Encrypt(aesKey, iv, plaintext, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &events.Message{
 		Info: types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: phonePN, Sender: selfPhone, IsFromMe: true},
-			ID:            "secret-edit-" + targetID,
+			MessageSource: types.MessageSource{Chat: phonePN, Sender: sender, IsFromMe: fromMe},
+			ID:            "secret-edit-" + targetID + ts.String(),
 			Timestamp:     ts,
 		},
 		Message: &waE2E.Message{SecretEncryptedMessage: &waE2E.SecretEncryptedMessage{
-			TargetMessageKey: &waCommon.MessageKey{RemoteJID: proto.String(phonePN.String()), FromMe: proto.Bool(true), ID: proto.String(targetID)},
+			TargetMessageKey: key,
 			EncPayload:       payload,
 			EncIV:            iv,
 			SecretEncType:    waE2E.SecretEncryptedMessage_MESSAGE_EDIT.Enum(),
 		}},
 	}
 }
+
+func textMsg(text string) *waE2E.Message { return &waE2E.Message{Conversation: proto.String(text)} }
 
 func TestHandleMessage_SecretEncryptedEditIsRecorded(t *testing.T) {
 	secret := bytes.Repeat([]byte{42}, 32)
@@ -3718,7 +3725,7 @@ func TestHandleMessage_SecretEncryptedEditIsRecorded(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	handleMessage(client, ms, secretEditEvent(t, secret, targetID, "I'm driving 😀", time.Unix(1710000020, 0)), testLogger())
+	handleMessage(client, ms, secretEditEvent(t, secret, targetID, true, textMsg("I'm driving 😀"), time.Unix(1710000020, 0)), testLogger())
 
 	var content, original string
 	if err := ms.db.QueryRow(
@@ -3732,8 +3739,40 @@ func TestHandleMessage_SecretEncryptedEditIsRecorded(t *testing.T) {
 
 	// without the original's secret the edit can't be read: the row stays as it was
 	client.Store.MsgSecrets = secretStore{secret: bytes.Repeat([]byte{1}, 32)}
-	handleMessage(client, ms, secretEditEvent(t, secret, targetID, "never stored", time.Unix(1710000040, 0)), testLogger())
+	handleMessage(client, ms, secretEditEvent(t, secret, targetID, true, textMsg("never stored"), time.Unix(1710000040, 0)), testLogger())
 	if err := ms.db.QueryRow("SELECT content FROM messages WHERE id = ?", targetID).Scan(&content); err != nil || content != "I'm driving 😀" {
 		t.Fatalf("an undecryptable edit changed the row: %q (%v)", content, err)
+	}
+}
+
+func TestHandleMessage_SecretEncryptedEditByPeer(t *testing.T) {
+	secret := bytes.Repeat([]byte{9}, 32)
+	client := newTestClientWithSelf(&mockLIDStore{}, selfPhone)
+	client.Store.MsgSecrets = secretStore{secret: secret}
+	ms := newTestMessageStore(t)
+	chatJID := phonePN.String()
+	for _, id := range []string{"3APEERTEXT", "3APEERDOC"} {
+		if _, err := ms.db.Exec(
+			`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)`,
+			id, chatJID, phonePN.User, "first", time.Unix(1710000000, 0), false,
+		); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	ts := time.Unix(1710000020, 0)
+	handleMessage(client, ms, secretEditEvent(t, secret, "3APEERTEXT", false, textMsg("second"), ts), testLogger())
+	// a caption edit keeps the document in its DocumentWithCaptionMessage wrapper (unwrapMessageContent)
+	doc := &waE2E.Message{DocumentWithCaptionMessage: &waE2E.FutureProofMessage{Message: &waE2E.Message{
+		DocumentMessage: &waE2E.DocumentMessage{Caption: proto.String("signed copy")}}}}
+	handleMessage(client, ms, secretEditEvent(t, secret, "3APEERDOC", false, doc, ts), testLogger())
+
+	for id, want := range map[string]string{"3APEERTEXT": "second", "3APEERDOC": "signed copy"} {
+		var content, original string
+		if err := ms.db.QueryRow("SELECT content, original_content FROM messages WHERE id = ?", id).Scan(&content, &original); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if content != want || original != "first" {
+			t.Fatalf("%s: got content=%q original=%q, want %q", id, content, original, want)
+		}
 	}
 }
