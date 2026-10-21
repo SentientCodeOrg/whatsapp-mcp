@@ -139,3 +139,27 @@ func TestLoadOrCreateBridgeTokenRejectsShortEnv(t *testing.T) {
 		t.Fatal("expected error for too-short token, got nil")
 	}
 }
+
+func TestBuildAllowedHosts_ExtraNamesFromEnv(t *testing.T) {
+	t.Setenv("WHATSAPP_BRIDGE_ALLOWED_HOSTS", " WhatsApp , ,bridge")
+	allowed := buildAllowedHosts(18766)
+	for _, h := range []string{"whatsapp:18766", "bridge:18766", "127.0.0.1:18766"} {
+		if !hostAllowed(h, allowed) {
+			t.Errorf("%s should be allowed", h)
+		}
+	}
+	if hostAllowed("whatsapp:8080", allowed) || hostAllowed("evil.example.com:18766", allowed) {
+		t.Error("unexpected host allowed")
+	}
+}
+
+func TestBridgeBindHost(t *testing.T) {
+	t.Setenv("WHATSAPP_BRIDGE_HOST", "")
+	if got := bridgeBindHost(); got != "127.0.0.1" {
+		t.Errorf("default = %q", got)
+	}
+	t.Setenv("WHATSAPP_BRIDGE_HOST", "0.0.0.0")
+	if got := bridgeBindHost(); got != "0.0.0.0" {
+		t.Errorf("env = %q", got)
+	}
+}
