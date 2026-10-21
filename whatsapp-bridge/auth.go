@@ -159,10 +159,30 @@ func checkBearerToken(authHeader, expected string) bool {
 // We accept the three loopback spellings (IPv4, name, IPv6) because the
 // MCP server's choice of WHATSAPP_API_URL determines which Host header the
 // underlying HTTP client emits.
+//
+// WHATSAPP_BRIDGE_ALLOWED_HOSTS adds more names (comma-separated, without the
+// port) for a bridge bound off loopback with WHATSAPP_BRIDGE_HOST, e.g. the
+// service name other containers on a Docker network use to reach it.
 func buildAllowedHosts(port int) map[string]struct{} {
-	return map[string]struct{}{
+	allowed := map[string]struct{}{
 		fmt.Sprintf("127.0.0.1:%d", port): {},
 		fmt.Sprintf("localhost:%d", port): {},
 		fmt.Sprintf("[::1]:%d", port):     {},
 	}
+	for _, name := range strings.Split(os.Getenv("WHATSAPP_BRIDGE_ALLOWED_HOSTS"), ",") {
+		if name = strings.ToLower(strings.TrimSpace(name)); name != "" {
+			allowed[fmt.Sprintf("%s:%d", name, port)] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+// bridgeBindHost is the address the REST server listens on: loopback unless
+// WHATSAPP_BRIDGE_HOST says otherwise (0.0.0.0 inside a container). The
+// bearer token and the Host allow-list still guard every call.
+func bridgeBindHost() string {
+	if h := strings.TrimSpace(os.Getenv("WHATSAPP_BRIDGE_HOST")); h != "" {
+		return h
+	}
+	return "127.0.0.1"
 }

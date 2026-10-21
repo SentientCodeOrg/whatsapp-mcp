@@ -12,6 +12,7 @@ import (
 	"math"
 	"math/rand"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -3075,9 +3076,9 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int, token string, allowedMediaRoots []string) {
 	handler := newRESTMux(client, messageStore, port, token, allowedMediaRoots)
 
-	// Start the server with proper timeouts. Bind to loopback so the bridge is
-	// not reachable from the LAN; MCP clients talk to it over localhost.
-	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	// Start the server with proper timeouts. Bind to loopback by default so the
+	// bridge is not reachable from the LAN; MCP clients talk to it over localhost.
+	serverAddr := net.JoinHostPort(bridgeBindHost(), strconv.Itoa(port))
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Create server with timeouts for stability
