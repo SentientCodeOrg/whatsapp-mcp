@@ -115,7 +115,7 @@ func changeOwnMessage(w http.ResponseWriter, r *http.Request, client *whatsmeow.
 	if revoke {
 		err = store.MarkMessageDeleted(req.MessageID, req.ChatJID, resp.Timestamp)
 	} else {
-		err = store.MarkMessageEdited(req.MessageID, req.ChatJID, req.Text, resp.Timestamp)
+		_, err = store.MarkMessageEdited(req.MessageID, req.ChatJID, req.Text, resp.Timestamp)
 	}
 	if err != nil {
 		fmt.Printf("Sent, but failed to record it in the store: %v\n", err)

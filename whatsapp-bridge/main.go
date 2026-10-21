@@ -1007,15 +1007,18 @@ func (store *MessageStore) MarkMessageDeleted(messageID, chatJID string, deleted
 // Edits older than one already applied are ignored. Unknown targets are a
 // silent no-op, like MarkMessageDeleted. edited_at is stored in UTC so the
 // TEXT comparison orders instants correctly across UTC-offset (DST) changes.
-func (store *MessageStore) MarkMessageEdited(messageID, chatJID, newContent string, editedAt time.Time) error {
+func (store *MessageStore) MarkMessageEdited(messageID, chatJID, newContent string, editedAt time.Time) (int64, error) {
 	editedAt = editedAt.UTC()
-	_, err := store.db.Exec(
+	res, err := store.db.Exec(
 		`UPDATE messages SET original_content = COALESCE(original_content, content),
 		   content = ?, edited_at = ?
 		 WHERE id = ? AND chat_jid = ? AND (edited_at IS NULL OR edited_at <= ?)`,
 		newContent, editedAt, messageID, chatJID, editedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // Get messages from a chat
@@ -1544,10 +1547,14 @@ func handleMessageEdit(messageStore *MessageStore, msg *waProto.Message, chatJID
 	targetID := protoMsg.GetKey().GetID()
 	newContent := extractTextContent(protoMsg.GetEditedMessage())
 	if targetID == "" || newContent == "" {
+		logger.Warnf("Edit in %s of %q without text (edited message: %v)", chatJID, targetID, protoMsg.GetEditedMessage())
 		return
 	}
-	if err := messageStore.MarkMessageEdited(targetID, chatJID, newContent, time.Unix(eventTimestamp, 0)); err != nil {
+	n, err := messageStore.MarkMessageEdited(targetID, chatJID, newContent, time.Unix(eventTimestamp, 0))
+	if err != nil {
 		logger.Warnf("Failed to record edit of message %s in %s: %v", targetID, chatJID, err)
+	} else {
+		logger.Infof("Edit of message %s in %s: %d row(s) updated", targetID, chatJID, n)
 	}
 }
 
