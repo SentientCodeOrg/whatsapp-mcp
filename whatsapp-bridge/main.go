@@ -31,6 +31,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -1539,18 +1540,37 @@ func handleMessageRevoke(messageStore *MessageStore, msg *waProto.Message, chatJ
 // arrive as a ProtocolMessage, possibly inside an EditedMessage wrapper that
 // whatsmeow has already unwrapped; their own content is empty, so without
 // this the edit was dropped and the store kept only the first version.
-func handleMessageEdit(messageStore *MessageStore, msg *waProto.Message, chatJID string, eventTimestamp int64, logger waLog.Logger) {
-	protoMsg := msg.GetProtocolMessage()
-	if protoMsg == nil || protoMsg.GetType() != waProto.ProtocolMessage_MESSAGE_EDIT {
+// Newer clients (the phone, 2026) send them as a SecretEncryptedMessage of type
+// MESSAGE_EDIT instead, encrypted with the original message's secret: whatsmeow
+// decrypts it (it keeps the secrets of the messages it saw, ours included).
+func handleMessageEdit(client *whatsmeow.Client, messageStore *MessageStore, evt *events.Message, chatJID string, logger waLog.Logger) {
+	msg := evt.Message
+	targetID, edited := "", (*waProto.Message)(nil)
+	if enc := msg.GetSecretEncryptedMessage(); enc != nil {
+		if enc.GetSecretEncType() != waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
+			return
+		}
+		targetID = enc.GetTargetMessageKey().GetID()
+		dec, err := client.DecryptSecretEncryptedMessage(context.Background(), evt)
+		if err != nil {
+			logger.Warnf("Could not decrypt edit of message %s in %s: %v", targetID, chatJID, err)
+			return
+		}
+		edited = dec
+		if p := dec.GetProtocolMessage(); p.GetType() == waProto.ProtocolMessage_MESSAGE_EDIT {
+			edited = p.GetEditedMessage()
+		}
+	} else if protoMsg := msg.GetProtocolMessage(); protoMsg.GetType() == waProto.ProtocolMessage_MESSAGE_EDIT {
+		targetID, edited = protoMsg.GetKey().GetID(), protoMsg.GetEditedMessage()
+	} else {
 		return
 	}
-	targetID := protoMsg.GetKey().GetID()
-	newContent := extractTextContent(protoMsg.GetEditedMessage())
+	newContent := extractTextContent(edited)
 	if targetID == "" || newContent == "" {
-		logger.Warnf("Edit in %s of %q without text (edited message: %v)", chatJID, targetID, protoMsg.GetEditedMessage())
+		logger.Warnf("Edit in %s of %q without text (edited message: %v)", chatJID, targetID, edited)
 		return
 	}
-	n, err := messageStore.MarkMessageEdited(targetID, chatJID, newContent, time.Unix(eventTimestamp, 0))
+	n, err := messageStore.MarkMessageEdited(targetID, chatJID, newContent, evt.Info.Timestamp)
 	if err != nil {
 		logger.Warnf("Failed to record edit of message %s in %s: %v", targetID, chatJID, err)
 	} else {
@@ -2199,7 +2219,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// inbound reactions, flag it unread — without any new message to show.
 	updateChatEphemeralSettingsFromProtocolMessage(messageStore, chatJID, msg.Message, msg.Info.Timestamp.Unix(), logger)
 	handleMessageRevoke(messageStore, msg.Message, chatJID, msg.Info.Timestamp.Unix(), logger)
-	handleMessageEdit(messageStore, msg.Message, chatJID, msg.Info.Timestamp.Unix(), logger)
+	handleMessageEdit(client, messageStore, msg, chatJID, logger)
 
 	// Backfill ephemeral state from any regular message's ContextInfo.
 	// EPHEMERAL_SETTING ProtocolMessages and GroupInfo events only fire on
