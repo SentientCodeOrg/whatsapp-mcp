@@ -91,6 +91,9 @@ class Message:
     # `content` is the current text. None for messages never edited.
     edited_at: datetime | None = None
     original_content: str | None = None
+    # WhatsApp's forwarding score: None when the sender wrote it, else how many
+    # times it was forwarded (the apps say "Forwarded many times" from 5).
+    forwarding_score: int | None = None
 
 
 @dataclass
@@ -184,6 +187,8 @@ def msg_to_dict(message: Message, include_sender_name: bool = True) -> dict[str,
         "quoted_message_id": message.quoted_message_id,
         "edited_at": message.edited_at.isoformat() if message.edited_at else None,
         "original_content": message.original_content,
+        "forwarded": bool(message.forwarding_score),
+        "forwarding_score": message.forwarding_score,
     }
 
 
@@ -223,6 +228,13 @@ def _edit_fields(row: tuple, at: int) -> dict[str, Any]:
         "edited_at": datetime.fromisoformat(edited) if edited else None,
         "original_content": row[at + 1] if len(row) > at + 1 else None,
     }
+
+
+def _forward_select(cursor: sqlite3.Cursor) -> str:
+    """SELECT expression for messages.forwarding_score, or a NULL literal for a
+    store written by a bridge that predates forward tracking."""
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(messages)").fetchall()}
+    return "messages.forwarding_score" if "forwarding_score" in columns else "NULL"
 
 
 def _last_read_time_select(cursor: sqlite3.Cursor, table_alias: str) -> str:
@@ -571,7 +583,7 @@ def list_messages(
         # Build base query
         query_parts = [
             "SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.quoted_message_id, messages.filename, "
-            f"{_edit_select(cursor)} FROM messages"
+            f"{_edit_select(cursor)}, {_forward_select(cursor)} FROM messages"
         ]
         query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
         where_clauses = []
@@ -639,6 +651,7 @@ def list_messages(
                 quoted_message_id=msg[8] if len(msg) > 8 else None,
                 filename=msg[9] if len(msg) > 9 else None,
                 **_edit_fields(msg, 10),
+                forwarding_score=msg[12] if len(msg) > 12 else None,
             )
             result.append(message)
 
@@ -712,7 +725,7 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
         # Get the target message first
         cursor.execute(
             f"""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type, messages.quoted_message_id, messages.filename, {_edit_select(cursor)}
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type, messages.quoted_message_id, messages.filename, {_edit_select(cursor)}, {_forward_select(cursor)}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.id = ?
@@ -736,12 +749,13 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
             quoted_message_id=msg_data[9] if len(msg_data) > 9 else None,
             filename=msg_data[10] if len(msg_data) > 10 else None,
             **_edit_fields(msg_data, 11),
+            forwarding_score=msg_data[13] if len(msg_data) > 13 else None,
         )
 
         # Get messages before
         cursor.execute(
             f"""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.quoted_message_id, messages.filename, {_edit_select(cursor)}
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.quoted_message_id, messages.filename, {_edit_select(cursor)}, {_forward_select(cursor)}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.chat_jid = ? AND messages.timestamp < ?
@@ -766,13 +780,14 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
                     quoted_message_id=msg[8] if len(msg) > 8 else None,
                     filename=msg[9] if len(msg) > 9 else None,
                     **_edit_fields(msg, 10),
+                    forwarding_score=msg[12] if len(msg) > 12 else None,
                 )
             )
 
         # Get messages after
         cursor.execute(
             f"""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.quoted_message_id, messages.filename, {_edit_select(cursor)}
+            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.quoted_message_id, messages.filename, {_edit_select(cursor)}, {_forward_select(cursor)}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.chat_jid = ? AND messages.timestamp > ?
@@ -797,6 +812,7 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
                     quoted_message_id=msg[8] if len(msg) > 8 else None,
                     filename=msg[9] if len(msg) > 9 else None,
                     **_edit_fields(msg, 10),
+                    forwarding_score=msg[12] if len(msg) > 12 else None,
                 )
             )
 

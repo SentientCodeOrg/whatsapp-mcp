@@ -110,6 +110,7 @@ func newTestMessageStore(t *testing.T) *MessageStore {
 			quoted_message_id TEXT,
 			edited_at TIMESTAMP,
 			original_content TEXT,
+			forwarding_score INTEGER,
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
@@ -3032,7 +3033,7 @@ func TestExtractMentionedJIDs_ExtendedText(t *testing.T) {
 func TestGetMessageIsFromMe(t *testing.T) {
 	store := newTestMessageStore(t)
 	chatJID := "15551234567@s.whatsapp.net"
-	if err := store.StoreMessage("outbound", chatJID, "15550000000", "[🤖] response", time.Now(), true, "", "", "", nil, nil, nil, 0, ""); err != nil {
+	if err := store.StoreMessage("outbound", chatJID, "15550000000", "[🤖] response", time.Now(), true, "", "", "", nil, nil, nil, 0, "", 0); err != nil {
 		t.Fatalf("store outbound message: %v", err)
 	}
 
@@ -3166,7 +3167,7 @@ func TestDownloadMediaCreatesOwnerOnlyMediaPath(t *testing.T) {
 	if err := messageStore.StoreMessage(
 		messageID, chatJID, "15557654321@s.whatsapp.net", "", timestamp, false,
 		"image", "", "https://example.invalid/media", []byte("media-key"),
-		make([]byte, 32), make([]byte, 32), 1, "",
+		make([]byte, 32), make([]byte, 32), 1, "", 0,
 	); err != nil {
 		t.Fatalf("store media message: %v", err)
 	}
@@ -3443,7 +3444,7 @@ func TestStoreMessage_MediaFields_RoundTrip(t *testing.T) {
 
 	if err := ms.StoreMessage(
 		"OUTBOUND1", chatJID, "50372269345", "", time.Now(), true,
-		"image", "test-sticker.webp", url, mediaKey, fileSHA256, fileEncSHA256, fileLength, "",
+		"image", "test-sticker.webp", url, mediaKey, fileSHA256, fileEncSHA256, fileLength, "", 0,
 	); err != nil {
 		t.Fatalf("StoreMessage failed: %v", err)
 	}
@@ -3484,7 +3485,7 @@ func TestStoreMessage_EmptyMediaFields_FailsRedownloadCheck(t *testing.T) {
 
 	if err := ms.StoreMessage(
 		"OUTBOUND2", chatJID, "50372269345", "", time.Now(), true,
-		"image", "test-sticker.webp", "", nil, nil, nil, 0, "",
+		"image", "test-sticker.webp", "", nil, nil, nil, 0, "", 0,
 	); err != nil {
 		t.Fatalf("StoreMessage failed: %v", err)
 	}

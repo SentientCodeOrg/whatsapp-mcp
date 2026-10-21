@@ -212,6 +212,8 @@ Inbound quoted replies are stored automatically. The `quoted_message_id` field i
 
 Edited messages are stored too: `content` is the current text, `edited_at` when the sender last edited it and `original_content` the text as first received (both `null` for messages never edited). Stores from an older bridge simply report every message as unedited.
 
+Forwarded messages are marked as WhatsApp marks them: `forwarded` is `true` and `forwarding_score` says how many times it was forwarded (WhatsApp shows "Forwarded many times" from 5); both are `false`/`null` for messages the sender wrote. Stores from an older bridge report every message as not forwarded.
+
 **Natural Language Examples:**
 
 - "Send 'Hello!' to +1234567890"
