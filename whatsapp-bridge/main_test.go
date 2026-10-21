@@ -18,9 +18,12 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"go.mau.fi/whatsmeow/util/gcmutil"
+	"go.mau.fi/whatsmeow/util/hkdfutil"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
@@ -3650,5 +3653,87 @@ func TestHandleMessage_EditUpdatesContentAndKeepsOriginal(t *testing.T) {
 	var n int
 	if err := ms.db.QueryRow("SELECT COUNT(*) FROM messages WHERE chat_jid = ?", chatJID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("an edit must not add a row of its own: %d rows (%v)", n, err)
+	}
+}
+
+// secretStore holds one original message's secret, as whatsmeow's store does
+// for every message it received or sent.
+type secretStore struct{ secret []byte }
+
+func (s secretStore) PutMessageSecrets(context.Context, []store.MessageSecretInsert) error {
+	return nil
+}
+func (s secretStore) PutMessageSecret(context.Context, types.JID, types.JID, types.MessageID, []byte) error {
+	return nil
+}
+func (s secretStore) GetMessageSecret(_ context.Context, _, sender types.JID, _ types.MessageID) ([]byte, types.JID, error) {
+	return s.secret, sender, nil
+}
+
+// secretEditEvent encrypts an edit of our own message targetID the way
+// current phone clients send it: a SecretEncryptedMessage of type
+// MESSAGE_EDIT, keyed on the original message's secret.
+func secretEditEvent(t *testing.T, secret []byte, targetID, text string, ts time.Time) *events.Message {
+	t.Helper()
+	plaintext, err := proto.Marshal(&waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{
+		Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+		Key:           &waCommon.MessageKey{RemoteJID: proto.String(phonePN.String()), FromMe: proto.Bool(true), ID: proto.String(targetID)},
+		EditedMessage: &waE2E.Message{Conversation: proto.String(text)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := selfPhone.ToNonAD().String()
+	key := hkdfutil.SHA256(secret, nil, []byte(targetID+sender+sender+"Message Edit"), 32)
+	iv := bytes.Repeat([]byte{7}, 12)
+	payload, err := gcmutil.Encrypt(key, iv, plaintext, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: phonePN, Sender: selfPhone, IsFromMe: true},
+			ID:            "secret-edit-" + targetID,
+			Timestamp:     ts,
+		},
+		Message: &waE2E.Message{SecretEncryptedMessage: &waE2E.SecretEncryptedMessage{
+			TargetMessageKey: &waCommon.MessageKey{RemoteJID: proto.String(phonePN.String()), FromMe: proto.Bool(true), ID: proto.String(targetID)},
+			EncPayload:       payload,
+			EncIV:            iv,
+			SecretEncType:    waE2E.SecretEncryptedMessage_MESSAGE_EDIT.Enum(),
+		}},
+	}
+}
+
+func TestHandleMessage_SecretEncryptedEditIsRecorded(t *testing.T) {
+	secret := bytes.Repeat([]byte{42}, 32)
+	client := newTestClientWithSelf(&mockLIDStore{}, selfPhone)
+	client.Store.MsgSecrets = secretStore{secret: secret}
+	ms := newTestMessageStore(t)
+	chatJID := phonePN.String()
+	targetID := "3BSECRET01"
+	if _, err := ms.db.Exec(
+		`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)`,
+		targetID, chatJID, selfPhone.User, "I'm driving", time.Unix(1710000000, 0), true,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	handleMessage(client, ms, secretEditEvent(t, secret, targetID, "I'm driving 😀", time.Unix(1710000020, 0)), testLogger())
+
+	var content, original string
+	if err := ms.db.QueryRow(
+		"SELECT content, original_content FROM messages WHERE id = ? AND chat_jid = ?", targetID, chatJID,
+	).Scan(&content, &original); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if content != "I'm driving 😀" || original != "I'm driving" {
+		t.Fatalf("got content=%q original=%q", content, original)
+	}
+
+	// without the original's secret the edit can't be read: the row stays as it was
+	client.Store.MsgSecrets = secretStore{secret: bytes.Repeat([]byte{1}, 32)}
+	handleMessage(client, ms, secretEditEvent(t, secret, targetID, "never stored", time.Unix(1710000040, 0)), testLogger())
+	if err := ms.db.QueryRow("SELECT content FROM messages WHERE id = ?", targetID).Scan(&content); err != nil || content != "I'm driving 😀" {
+		t.Fatalf("an undecryptable edit changed the row: %q (%v)", content, err)
 	}
 }
