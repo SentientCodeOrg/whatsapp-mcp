@@ -28,7 +28,7 @@ func TestOwnMessageEndpoints_RefuseBeforeSending(t *testing.T) {
 		{"gone", now.Add(-time.Minute), true, "", true},
 	}
 	for _, m := range rows {
-		if err := store.StoreMessage(m.id, chat, "15551234567", "hi", m.at, m.fromMe, m.media, "", "", nil, nil, nil, 0, ""); err != nil {
+		if err := store.StoreMessage(m.id, chat, "15551234567", "hi", m.at, m.fromMe, m.media, "", "", nil, nil, nil, 0, "", 0); err != nil {
 			t.Fatal(err)
 		}
 		if m.deleted {
@@ -67,7 +67,7 @@ func TestOwnMessage_FoundOnlyForOurLiveMessages(t *testing.T) {
 	const chat = "15551234567@s.whatsapp.net"
 	store := newTestMessageStore(t)
 	at := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
-	if err := store.StoreMessage("m1", chat, "15551234567", "hi", at, true, "", "", "", nil, nil, nil, 0, ""); err != nil {
+	if err := store.StoreMessage("m1", chat, "15551234567", "hi", at, true, "", "", "", nil, nil, nil, 0, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	sent, media, found, err := store.OwnMessage("m1", chat)
