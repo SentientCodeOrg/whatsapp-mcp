@@ -9,6 +9,23 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 
 > Originally created by [Luke Harries](https://github.com/lharries/whatsapp-mcp). Maintained by [Very Good Plugins](https://verygoodplugins.com/?utm_source=github).
 
+> [!NOTE]
+> **About this fork (SentientCodeOrg).** This fork's `main` follows upstream. The patches below run on our own
+> production bridge and are each offered upstream as a PR; until they're merged you can use them from the
+> [`sentient`](https://github.com/SentientCodeOrg/whatsapp-mcp/tree/sentient) branch (upstream `main` plus all of them).
+> **Use at your own risk:** no support is promised, and the branch is rebased on upstream from time to time.
+>
+> | Patch | Upstream PR |
+> |---|---|
+> | Record message edits and keep the original text (also phone edits sent as `SecretEncryptedMessage`) | [#305](https://github.com/verygoodplugins/whatsapp-mcp/pull/305) |
+> | `WHATSAPP_LOG_LEVEL` | [#306](https://github.com/verygoodplugins/whatsapp-mcp/pull/306) |
+> | Send a photo or video as a document (`as_document`) | [#307](https://github.com/verygoodplugins/whatsapp-mcp/pull/307) |
+> | Link preview card on sent links (`link_preview`) | [#308](https://github.com/verygoodplugins/whatsapp-mcp/pull/308) |
+> | Read receipts for sent messages (`get_message_receipts`) | [#309](https://github.com/verygoodplugins/whatsapp-mcp/pull/309) |
+> | Edit and delete-for-everyone our own messages (`/api/edit`, `/api/revoke`) | [#310](https://github.com/verygoodplugins/whatsapp-mcp/pull/310) |
+> | Record forwarded messages (`forwarding_score`) | [#311](https://github.com/verygoodplugins/whatsapp-mcp/pull/311) |
+> | Bind address and extra Host names from the environment; `GET /api/avatar` (profile picture) | not offered yet |
+
 <p align="center">
   <a href="https://github.com/user-attachments/assets/9475af1d-2369-4315-9ccc-823dba2c5c32"><strong>Watch the WhatsApp MCP demo video</strong></a>
 </p>
