@@ -2687,6 +2687,7 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 	// On-demand history sync endpoint (see history_ondemand.go)
 	registerHistoryEndpoint(mux, auth, client, messageStore)
 	registerOwnMessageEndpoints(mux, auth, client, messageStore)
+	registerAvatarEndpoint(mux, auth, client)
 
 	// Health check endpoint
 	mux.HandleFunc("/api/health", auth(func(w http.ResponseWriter, r *http.Request) {
