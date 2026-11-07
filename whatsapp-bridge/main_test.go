@@ -282,7 +282,7 @@ func TestResolveRecipientJIDResolvesPhoneToCachedLID(t *testing.T) {
 		lidByPN: map[types.JID]types.JID{phoneJID: lidJID},
 	})
 
-	got, err := resolveRecipientJID(client, phoneJID.User)
+	got, err := resolveRecipientJID(context.Background(), client, phoneJID.User)
 	if err != nil {
 		t.Fatalf("resolveRecipientJID returned error: %v", err)
 	}
@@ -2754,7 +2754,7 @@ func TestResolveRecipientJID_ForMarkReadTargets(t *testing.T) {
 		},
 	})
 
-	gotChat, err := resolveRecipientJID(client, phoneChat.String())
+	gotChat, err := resolveRecipientJID(context.Background(), client, phoneChat.String())
 	if err != nil {
 		t.Fatalf("chat resolve: %v", err)
 	}
@@ -2762,7 +2762,7 @@ func TestResolveRecipientJID_ForMarkReadTargets(t *testing.T) {
 		t.Fatalf("expected chat LID %s, got %s", lidChat, gotChat)
 	}
 
-	gotSender, err := resolveRecipientJID(client, phoneSender.User)
+	gotSender, err := resolveRecipientJID(context.Background(), client, phoneSender.User)
 	if err != nil {
 		t.Fatalf("sender resolve: %v", err)
 	}
@@ -2770,7 +2770,7 @@ func TestResolveRecipientJID_ForMarkReadTargets(t *testing.T) {
 		t.Fatalf("expected sender LID %s, got %s", lidSender, gotSender)
 	}
 
-	gotGroup, err := resolveRecipientJID(client, group.String())
+	gotGroup, err := resolveRecipientJID(context.Background(), client, group.String())
 	if err != nil {
 		t.Fatalf("group resolve: %v", err)
 	}

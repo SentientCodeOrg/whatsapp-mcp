@@ -1314,6 +1314,17 @@ type SendMessageResponse struct {
 	ID string `json:"id"`
 }
 
+// sendTimeout bounds a whole /api/send (LID lookup, upload, send), so callers
+// get an answer before their own HTTP timeouts. A var so tests can shorten it.
+// A send with media gets sendMediaExtra on top for the upload, which had no
+// limit before.
+var sendTimeout = 15 * time.Second
+
+const sendMediaExtra = 5 * time.Minute
+
+// sendMessage is the send used by /api/send; a var so tests can stub WhatsApp.
+var sendMessage = sendWhatsAppMessage
+
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
 	Recipient       string `json:"recipient"`
@@ -1618,7 +1629,7 @@ func handleMessageEdit(client *whatsmeow.Client, messageStore *MessageStore, evt
 
 // resolveRecipientJID parses a phone number or JID string and resolves PN -> LID
 // for personal chats before sending.
-func resolveRecipientJID(client *whatsmeow.Client, recipient string) (types.JID, error) {
+func resolveRecipientJID(ctx context.Context, client *whatsmeow.Client, recipient string) (types.JID, error) {
 	var recipientJID types.JID
 	var err error
 
@@ -1638,7 +1649,6 @@ func resolveRecipientJID(client *whatsmeow.Client, recipient string) (types.JID,
 	// WhatsApp is migrating to LID-based addressing; messages sent to the
 	// phone JID silently fail for migrated contacts.
 	if recipientJID.Server == types.DefaultUserServer {
-		ctx := context.Background()
 		lid, lidErr := client.Store.LIDs.GetLIDForPN(ctx, recipientJID)
 		if lidErr == nil && !lid.IsEmpty() {
 			fmt.Printf("Resolved %s -> %s (LID)\n", recipientJID, lid)
@@ -1691,8 +1701,10 @@ func resolveMentionJIDs(client *whatsmeow.Client, mentions []string) []string {
 
 // Function to send a WhatsApp message
 // sendWhatsAppMessage returns success, a status message and, on success, the
-// sent message's WhatsApp id.
-func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMsgID string, quotedSenderJID string, quotedContent string, mentions []string, asDocument bool, preview *LinkPreview) (bool, string, string) {
+// sent message's WhatsApp id. ctx bounds every server round trip (LID lookup,
+// upload, send): a recipient that isn't on WhatsApp can otherwise keep the
+// device-list lookup waiting for whatsmeow's own much longer timeout.
+func sendWhatsAppMessage(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMsgID string, quotedSenderJID string, quotedContent string, mentions []string, asDocument bool, preview *LinkPreview) (bool, string, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp", ""
 	}
@@ -1720,7 +1732,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	// under @s.whatsapp.net (matches what list_chats / list_messages expect).
 	storageJID := settingsLookupJID
 
-	recipientJID, err := resolveRecipientJID(client, recipient)
+	recipientJID, err := resolveRecipientJID(ctx, client, recipient)
 	if err != nil {
 		return false, err.Error(), ""
 	}
@@ -1745,7 +1757,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		}
 
 		// Upload media to WhatsApp servers
-		upload, err = client.Upload(context.Background(), mediaData, mediaType)
+		upload, err = client.Upload(ctx, mediaData, mediaType)
 		if err != nil {
 			return false, fmt.Sprintf("Error uploading media: %v", err), ""
 		}
@@ -1905,7 +1917,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	}
 
 	// Send message
-	resp, err := client.SendMessage(context.Background(), recipientJID, msg)
+	resp, err := client.SendMessage(ctx, recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err), ""
@@ -2776,8 +2788,18 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 		fmt.Printf("→ /api/send recipient=%q message_len=%d has_media=%v\n",
 			req.Recipient, len(req.Message), resolvedMediaPath != "")
 
-		// Send the message
-		success, message, sentID := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, resolvedMediaPath, req.QuotedMessageID, req.QuotedSenderJID, req.QuotedContent, req.Mentions, req.AsDocument, req.LinkPreview)
+		// Send the message, answering within sendTimeout even when WhatsApp
+		// doesn't (e.g. a recipient that isn't on WhatsApp).
+		timeout := sendTimeout
+		if resolvedMediaPath != "" {
+			timeout += sendMediaExtra
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		success, message, sentID := sendMessage(ctx, client, messageStore, req.Recipient, req.Message, resolvedMediaPath, req.QuotedMessageID, req.QuotedSenderJID, req.QuotedContent, req.Mentions, req.AsDocument, req.LinkPreview)
+		if !success && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			message = fmt.Sprintf("Timed out after %s sending to %s (is it on WhatsApp?): %s", timeout, req.Recipient, message)
+		}
 		fmt.Printf("← /api/send success=%v status=%q\n", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -2872,13 +2894,13 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 		// MCP storage normalizes chats/senders to phone JIDs; MarkRead routes
 		// the receipt `to`/`participant` as given, so resolve PN -> LID the
 		// same way sendWhatsAppMessage does or migrated contacts silently fail.
-		chatJID, err = resolveRecipientJID(client, req.ChatJID)
+		chatJID, err = resolveRecipientJID(context.Background(), client, req.ChatJID)
 		if err != nil || chatJID.User == "" || chatJID.Server == "" {
 			http.Error(w, "Invalid chat_jid", http.StatusBadRequest)
 			return
 		}
 		if req.SenderJID != "" {
-			senderJID, err = resolveRecipientJID(client, req.SenderJID)
+			senderJID, err = resolveRecipientJID(context.Background(), client, req.SenderJID)
 			if err != nil || senderJID.User == "" || senderJID.Server == "" {
 				http.Error(w, "Invalid sender_jid", http.StatusBadRequest)
 				return

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -220,5 +222,40 @@ func TestSendHandler_ResponseCarriesID(t *testing.T) {
 	// the test client is not connected: the send fails and id is present but empty
 	if id, ok := body["id"]; !ok || id != "" || body["success"] != false {
 		t.Fatalf("response = %v, want success false and an empty id", body)
+	}
+}
+
+func TestSendHandler_TimesOutWithFailure(t *testing.T) {
+	const token = "supersecrettoken1234567890abcdef"
+	originalSend, originalTimeout := sendMessage, sendTimeout
+	t.Cleanup(func() { sendMessage, sendTimeout = originalSend, originalTimeout })
+	sendTimeout = 50 * time.Millisecond
+	// WhatsApp never answering (a recipient that isn't on WhatsApp): the send
+	// only returns once its context gives up.
+	sendMessage = func(ctx context.Context, _ *whatsmeow.Client, _ *MessageStore, _ string, _ string, _ string, _ string, _ string, _ string, _ []string, _ bool, _ *LinkPreview) (bool, string, string) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("send has no deadline")
+		}
+		<-ctx.Done()
+		return false, "Error sending message: " + ctx.Err().Error(), ""
+	}
+	handler := newRESTMux(newTestClient(&mockLIDStore{}), newTestMessageStore(t), 8080, token, nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/send",
+		strings.NewReader(`{"recipient":"390000000000","message":"ciao"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	start := time.Now()
+	handler.ServeHTTP(resp, req)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("answered after %s", elapsed)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %q: %v", resp.Body.String(), err)
+	}
+	msg, _ := body["message"].(string)
+	if resp.Code != http.StatusInternalServerError || body["success"] != false || body["id"] != "" || !strings.Contains(msg, "Timed out") {
+		t.Fatalf("response %d %v, want a failure with an empty id", resp.Code, body)
 	}
 }
