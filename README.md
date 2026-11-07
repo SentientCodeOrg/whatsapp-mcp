@@ -509,6 +509,9 @@ Copy `.env.example` to `.env` and configure as needed:
 | `WEBHOOK_URL`          | `http://localhost:8769/whatsapp/webhook` | Webhook for incoming messages                |
 | `WEBHOOK_ENABLED`      | `true`                                   | Set to `false` to disable outbound webhooks  |
 | `WHATSAPP_AUTO_DOWNLOAD_MEDIA` | `true` | Automatically download incoming media, including webhook image bytes. `false` keeps webhook metadata/text without `mediaBase64` and leaves downloads to `/api/download` (`download_media`); delayed downloads may fail after media expires. Status messages are stored but never auto-downloaded or forwarded |
+| `WEBHOOK_MEDIA_TYPES` | `image` | Comma list of `image,audio,video,document,location` forwarded with the webhook: media downloaded synchronously with `mediaType`, sniffed `mimeType`, `mediaFilename`, `mediaBase64` (voice notes add `ptt: true`); `location` adds `latitude`, `longitude`, `locationName`, `locationAddress` (live location: first fix only) |
+| `WEBHOOK_MEDIA_MAX_MB` | `16` | Largest media base64-encoded into a webhook; larger files go out with `mediaTooLarge: true` and no bytes |
+| `WEBHOOK_RECEIPTS` | `false` | `true` sends `{eventType: "receipt", chatJID, receiptType: "delivered"\|"read", messageIds, timestamp}` for messages we sent in 1:1 chats |
 | `FORWARD_SELF`         | `true`                                   | Forward messages sent by self                |
 | `WHATSAPP_DB_PATH`     | `../whatsapp-bridge/store/messages.db`   | Path to SQLite database                      |
 | `WHATSMEOW_DB_PATH`    | `../whatsapp-bridge/store/whatsapp.db`   | whatsmeow DB used for LID ↔ phone resolution |

@@ -141,7 +141,7 @@ func TestSendWebhookWithMediaDisabledSkipsMediaIO(t *testing.T) {
 	SendWebhookWithMedia(
 		"123@s.whatsapp.net", "", "123@s.whatsapp.net", false,
 		"", "", "", nil, nil,
-		"message-id", "image", "image/jpeg", "missing.jpg", missingPath,
+		"message-id", "image", "image/jpeg", "missing.jpg", missingPath, false, false,
 	)
 	_ = writeEnd.Close()
 	os.Stdout = previousStdout

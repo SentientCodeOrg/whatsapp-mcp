@@ -7,13 +7,65 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
+
+	waProto "go.mau.fi/whatsmeow/binary/proto"
 )
 
-// maxMediaBase64Bytes is the maximum file size that will be base64-encoded and
-// included in a webhook payload. Files larger than this limit are skipped to
-// avoid excessive memory use and oversized HTTP requests.
-const maxMediaBase64Bytes = 10 * 1024 * 1024 // 10 MB
+// webhookMediaTypes returns the media types (image, audio, video, document,
+// location) that are downloaded synchronously and forwarded with the webhook,
+// from WEBHOOK_MEDIA_TYPES (comma-separated; default "image").
+func webhookMediaTypes() map[string]bool {
+	v := os.Getenv("WEBHOOK_MEDIA_TYPES")
+	if strings.TrimSpace(v) == "" {
+		v = "image"
+	}
+	set := map[string]bool{}
+	for _, t := range strings.Split(v, ",") {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			set[t] = true
+		}
+	}
+	return set
+}
+
+// webhookMediaMaxBytes is the largest file that is base64-encoded into a
+// webhook payload (WEBHOOK_MEDIA_MAX_MB, default 16). Larger files are sent
+// without bytes and with mediaTooLarge set.
+func webhookMediaMaxBytes() int64 {
+	mb, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("WEBHOOK_MEDIA_MAX_MB")), 64)
+	if err != nil || mb <= 0 {
+		mb = 16
+	}
+	return int64(mb * 1024 * 1024)
+}
+
+// webhookMimeType sniffs the downloaded file's type. Where sniffing only finds
+// a container (zip for Office files, ogg for voice notes) or nothing, the type
+// the sender declared is more precise and is kept.
+func webhookMimeType(path, declared string) string {
+	sniffed := ""
+	if f, err := os.Open(path); err == nil {
+		buf := make([]byte, 512)
+		if n, _ := f.Read(buf); n > 0 {
+			sniffed = http.DetectContentType(buf[:n])
+		}
+		_ = f.Close()
+	}
+	switch sniffed {
+	case "", "application/octet-stream", "application/zip", "application/ogg":
+		if declared != "" {
+			return declared
+		}
+	}
+	if sniffed == "" {
+		return "application/octet-stream"
+	}
+	return sniffed
+}
 
 // webhookClient is used for all outbound webhook POSTs. The 30-second timeout
 // prevents a slow or unreachable endpoint from blocking message handling
@@ -67,6 +119,17 @@ type WebhookPayload struct {
 	MimeType      string `json:"mimeType,omitempty"`
 	MediaFilename string `json:"mediaFilename,omitempty"`
 	MediaBase64   string `json:"mediaBase64,omitempty"`
+	MediaTooLarge bool   `json:"mediaTooLarge,omitempty"`
+	PTT           bool   `json:"ptt,omitempty"`
+	// Location fields - populated when MediaType is "location".
+	Latitude        *float64 `json:"latitude,omitempty"`
+	Longitude       *float64 `json:"longitude,omitempty"`
+	LocationName    *string  `json:"locationName,omitempty"`
+	LocationAddress *string  `json:"locationAddress,omitempty"`
+	// Receipt fields - populated when EventType is "receipt".
+	ReceiptType string   `json:"receiptType,omitempty"`
+	MessageIDs  []string `json:"messageIds,omitempty"`
+	Timestamp   string   `json:"timestamp,omitempty"`
 	// Reaction fields - populated when EventType is "reaction".
 	ReactionToMessageID string  `json:"reactionToMessageId,omitempty"`
 	ReactionEmoji       *string `json:"reactionEmoji,omitempty"`
@@ -160,14 +223,16 @@ func SendWebhookWithMessageID(sender, content, chatJID string, isFromMe bool, qu
 }
 
 // SendWebhookWithMedia sends a message to the webhook endpoint including base64-encoded
-// image data read from localPath. If localPath is empty or unreadable the webhook is
+// media read from localPath. If localPath is empty or unreadable the webhook is
 // still sent – just without the MediaBase64 field so the text caption is not lost.
+// tooLarge (or a file over webhookMediaMaxBytes) sends mediaTooLarge instead of bytes.
 func SendWebhookWithMedia(
 	sender, content, chatJID string,
 	isFromMe bool,
 	quotedMessageId, quotedSender, quotedContent string,
 	quotedIsFromMe *bool, mentionedJIDs []string,
 	messageID, mediaType, mimeType, mediaFilename, localPath string,
+	ptt, tooLarge bool,
 ) {
 	if !webhooksEnabled() {
 		return
@@ -178,8 +243,9 @@ func SendWebhookWithMedia(
 		info, statErr := os.Stat(localPath)
 		if statErr != nil {
 			fmt.Printf("⚠ Could not stat media file for base64 encoding: %v\n", statErr)
-		} else if info.Size() > maxMediaBase64Bytes {
+		} else if info.Size() > webhookMediaMaxBytes() {
 			fmt.Printf("⚠ Media file too large for base64 encoding (%d bytes), skipping MediaBase64\n", info.Size())
+			tooLarge = true
 		} else if data, err := os.ReadFile(localPath); err == nil {
 			mediaBase64 = base64.StdEncoding.EncodeToString(data)
 		} else {
@@ -202,6 +268,103 @@ func SendWebhookWithMedia(
 		MimeType:        mimeType,
 		MediaFilename:   mediaFilename,
 		MediaBase64:     mediaBase64,
+		MediaTooLarge:   tooLarge,
+		PTT:             ptt,
+	})
+}
+
+// SendReceiptWebhook tells the webhook that messages we sent in a 1:1 chat
+// were delivered to or read by the other side (WEBHOOK_RECEIPTS=true only).
+func SendReceiptWebhook(reader, chatJID, receiptType string, messageIDs []string, at time.Time) {
+	sendWebhookPayload(WebhookPayload{
+		EventType:   "receipt",
+		Sender:      reader,
+		ChatJID:     chatJID,
+		ReceiptType: receiptType,
+		MessageIDs:  messageIDs,
+		Timestamp:   at.UTC().Format(time.RFC3339),
+	})
+}
+
+// declaredMimeType is the MIME type the sender declared for a message's media.
+func declaredMimeType(msg *waProto.Message) string {
+	msg = unwrapMessageContent(msg)
+	switch {
+	case msg.GetImageMessage() != nil:
+		return msg.GetImageMessage().GetMimetype()
+	case msg.GetVideoMessage() != nil:
+		return msg.GetVideoMessage().GetMimetype()
+	case msg.GetAudioMessage() != nil:
+		return msg.GetAudioMessage().GetMimetype()
+	case msg.GetDocumentMessage() != nil:
+		return msg.GetDocumentMessage().GetMimetype()
+	case msg.GetStickerMessage() != nil:
+		return msg.GetStickerMessage().GetMimetype()
+	}
+	return ""
+}
+
+// liveLocationWindow is how long a live location share from one sender in one
+// chat is treated as the same share: only its first fix is forwarded. WhatsApp
+// caps a live share at 8 hours.
+const liveLocationWindow = 8 * time.Hour
+
+var (
+	liveLocationMu   sync.Mutex
+	liveLocationSeen = map[string]time.Time{}
+)
+
+// firstLiveFix reports whether a live location from sender in chat starts a
+// new share, recording it if so.
+// ponytail: per chat+sender time window, not per share id (whatsmeow exposes none).
+func firstLiveFix(chatJID, sender string, now time.Time) bool {
+	liveLocationMu.Lock()
+	defer liveLocationMu.Unlock()
+	key := chatJID + "|" + sender
+	if last, ok := liveLocationSeen[key]; ok && now.Sub(last) < liveLocationWindow {
+		return false
+	}
+	for k, t := range liveLocationSeen {
+		if now.Sub(t) >= liveLocationWindow {
+			delete(liveLocationSeen, k)
+		}
+	}
+	liveLocationSeen[key] = now
+	return true
+}
+
+// forwardLocation sends a location pin (or a live location's first fix) to
+// the webhook as mediaType "location". Messages without a location are ignored.
+func forwardLocation(msg *waProto.Message, sender, chatJID string, isFromMe bool, messageID, quotedMessageId, quotedSender, quotedContent string, mentionedJIDs []string) {
+	msg = unwrapMessageContent(msg)
+	var lat, lng float64
+	var name, address, comment string
+	if loc := msg.GetLocationMessage(); loc != nil {
+		lat, lng = loc.GetDegreesLatitude(), loc.GetDegreesLongitude()
+		name, address, comment = loc.GetName(), loc.GetAddress(), loc.GetComment()
+	} else if live := msg.GetLiveLocationMessage(); live != nil {
+		if !firstLiveFix(chatJID, sender, time.Now()) {
+			return
+		}
+		lat, lng, comment = live.GetDegreesLatitude(), live.GetDegreesLongitude(), live.GetCaption()
+	} else {
+		return
+	}
+	sendWebhookPayload(WebhookPayload{
+		Sender:          sender,
+		Content:         comment,
+		ChatJID:         chatJID,
+		IsFromMe:        isFromMe,
+		QuotedMessageId: quotedMessageId,
+		QuotedSender:    quotedSender,
+		QuotedContent:   quotedContent,
+		MentionedJIDs:   mentionedJIDs,
+		MessageID:       messageID,
+		MediaType:       "location",
+		Latitude:        &lat,
+		Longitude:       &lng,
+		LocationName:    &name,
+		LocationAddress: &address,
 	})
 }
 

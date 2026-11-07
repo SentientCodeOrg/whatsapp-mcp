@@ -94,6 +94,9 @@ For PR creation, hosted review, CI, and merge readiness, use the installed `baby
 | `WEBHOOK_URL` | `http://localhost:8769/whatsapp/webhook` | Outgoing webhook for incoming messages (empty falls back to this default) |
 | `WEBHOOK_ENABLED` | `true` | Set to `false` to disable outbound webhooks entirely |
 | `WHATSAPP_AUTO_DOWNLOAD_MEDIA` | `true` | Automatically download incoming media, including webhook image bytes. `false` keeps webhook metadata/text without `mediaBase64` and leaves downloads to `/api/download` (`download_media`); delayed downloads may fail after media expires. Status messages are stored but never auto-downloaded or forwarded |
+| `WEBHOOK_MEDIA_TYPES` | `image` | Comma list of `image,audio,video,document,location` forwarded with the webhook: media downloaded synchronously with `mediaType`, sniffed `mimeType`, `mediaFilename`, `mediaBase64` (voice notes add `ptt: true`); `location` adds `latitude`, `longitude`, `locationName`, `locationAddress` (live location: first fix only) |
+| `WEBHOOK_MEDIA_MAX_MB` | `16` | Largest media base64-encoded into a webhook; larger files go out with `mediaTooLarge: true` and no bytes |
+| `WEBHOOK_RECEIPTS` | `false` | `true` sends `{eventType: "receipt", chatJID, receiptType: "delivered"\|"read", messageIds, timestamp}` for messages we sent in 1:1 chats |
 | `FORWARD_SELF` | `true` | Whether self-sent messages are forwarded (`getEnvBool` default; set `FORWARD_SELF=false` to disable) |
 | `WHATSAPP_PARENT_WATCHDOG_S` | `30` | Stdio parent-liveness poll interval (seconds). Exits when the original parent is gone (POSIX reparent). Soft stdin EOF alone does not exit. |
 | `WHISPER_MODEL` | unset | Required model-file path for default whisper.cpp transcription |
