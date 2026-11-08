@@ -3054,6 +3054,10 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 		var req struct {
 			Recipient string `json:"recipient"`
 			IsTyping  bool   `json:"is_typing"`
+			// Online: WhatsApp shows "typing…" only from a device that is online, and an online
+			// companion silences the phone's notifications, so the bridge stays offline. With this
+			// set it goes online with is_typing true and offline again with is_typing false.
+			Online bool `json:"online"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request format", http.StatusBadRequest)
@@ -3098,7 +3102,17 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 		}
 
 		// Send the chat presence update
+		if req.Online && req.IsTyping {
+			if perr := client.SendPresence(context.Background(), types.PresenceAvailable); perr != nil {
+				fmt.Printf("typing: going online failed: %v\n", perr)
+			}
+		}
 		err = client.SendChatPresence(context.Background(), recipientJID, state, types.ChatPresenceMediaText)
+		if req.Online && !req.IsTyping {
+			if perr := client.SendPresence(context.Background(), types.PresenceUnavailable); perr != nil {
+				fmt.Printf("typing: going offline failed: %v\n", perr)
+			}
+		}
 
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
