@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"image"
+	"image/jpeg"
 	"testing"
 
 	"go.mau.fi/whatsmeow"
@@ -48,5 +51,30 @@ func TestMatchPollVote(t *testing.T) {
 	}
 	if got := matchPollVote(opts, nil); got == nil || len(got) != 0 {
 		t.Errorf("withdrawn vote = %#v, want empty non-nil list", got)
+	}
+}
+
+func TestSquareJPEG(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 1000, 700))
+	for i := range src.Pix {
+		src.Pix[i] = 200
+	}
+	out, err := squareJPEG(src, groupPhotoSide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx() != 640 || b.Dy() != 640 {
+		t.Fatalf("want 640x640, got %v", b)
+	}
+	if r, _, _, _ := img.At(320, 320).RGBA(); r>>8 < 190 || r>>8 > 210 {
+		t.Fatalf("colour drifted: %d", r>>8)
+	}
+	small, _ := squareJPEG(image.NewRGBA(image.Rect(0, 0, 300, 400)), groupPhotoSide)
+	if img, _ := jpeg.Decode(bytes.NewReader(small)); img.Bounds().Dx() != 300 {
+		t.Fatalf("small images must not be upscaled, got %v", img.Bounds())
 	}
 }

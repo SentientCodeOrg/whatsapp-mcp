@@ -541,6 +541,27 @@ def update_group_settings(
 
 
 @mcp.tool()
+def set_group_photo(group_jid: str, image_path: str = "", remove: bool = False) -> dict[str, Any]:
+    """Change a group's photo, or remove it. Members see the change in the chat.
+
+    The image (JPEG, PNG or GIF) is cropped to a centered square and scaled to
+    640x640, so put the subject in the middle. It must sit in a folder the
+    bridge may read from, as for send_file.
+
+    Args:
+        group_jid: The group's JID (…@g.us)
+        image_path: Absolute path to the new photo
+        remove: True to remove the current photo instead
+    """
+    payload: dict[str, Any] = {"group": group_jid}
+    if remove:
+        payload["remove"] = True
+    else:
+        payload["image_path"] = image_path
+    return bridge_call("POST", "/group/photo", payload)
+
+
+@mcp.tool()
 def get_group_invite_link(group_jid: str, reset: bool = False) -> dict[str, Any]:
     """The invite link of a group you administer.
 

@@ -2746,6 +2746,7 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 	registerOwnMessageEndpoints(mux, auth, client, messageStore)
 	registerAvatarEndpoint(mux, auth, client)
 	registerGroupEndpoint(mux, auth, client, messageStore)
+	registerGroupPhotoEndpoint(mux, auth, client, allowedMediaRoots)
 	registerPollEndpoint(mux, auth, client, messageStore)
 	registerMiscEndpoints(mux, auth, client, messageStore)
 
