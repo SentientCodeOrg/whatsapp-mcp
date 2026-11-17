@@ -25,6 +25,7 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 > | Edit and delete-for-everyone our own messages (`/api/edit`, `/api/revoke`) | [#310](https://github.com/verygoodplugins/whatsapp-mcp/pull/310) |
 > | Record forwarded messages (`forwarding_score`) | [#311](https://github.com/verygoodplugins/whatsapp-mcp/pull/311) |
 > | Bind address and extra Host names from the environment; `GET /api/avatar` (profile picture) | not offered yet |
+> | Create groups (`POST /api/group/create`, `create_group` tool; people WhatsApp won't add come back with an invite link) | overlaps [#302](https://github.com/verygoodplugins/whatsapp-mcp/pull/302); MCP tool to offer after it |
 
 <p align="center">
   <a href="https://github.com/user-attachments/assets/9475af1d-2369-4315-9ccc-823dba2c5c32"><strong>Watch the WhatsApp MCP demo video</strong></a>
