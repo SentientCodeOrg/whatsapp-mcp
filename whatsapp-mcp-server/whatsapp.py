@@ -1435,21 +1435,55 @@ def send_reaction(
         return False, f"Unexpected error: {str(e)}"
 
 
-def create_group(name: str, participants: list[str]) -> dict[str, Any]:
-    """Create a WhatsApp group through the bridge; returns the bridge's JSON."""
+def bridge_call(method: str, path: str, payload: dict[str, Any] | None = None,
+                params: dict[str, str] | None = None) -> dict[str, Any]:
+    """Call a bridge endpoint that answers JSON; errors come back as {"ok": False, "error": ...}."""
     try:
-        response = requests.post(
-            f"{WHATSAPP_API_BASE_URL}/group/create",
-            json={"name": name, "participants": participants},
-            headers=_bridge_headers(),
-            timeout=45,
+        response = requests.request(
+            method, f"{WHATSAPP_API_BASE_URL}{path}", json=payload, params=params,
+            headers=_bridge_headers(), timeout=45,
         )
-        try:
-            return response.json()
-        except json.JSONDecodeError:
-            return {"ok": False, "error": f"HTTP {response.status_code} - {response.text}"}
     except requests.RequestException as e:
         return {"ok": False, "error": f"Request error: {e}"}
+    try:
+        result = response.json()
+    except ValueError:
+        return {"ok": response.ok, "error": None if response.ok else f"HTTP {response.status_code} - {response.text.strip()}"}
+    if isinstance(result, dict) and "success" in result and "ok" not in result:
+        result = {"ok": result["success"], "message": result.get("message")}
+    return result
+
+
+def get_poll_results(message_id: str, chat_jid: str) -> dict[str, Any]:
+    """A poll's options with each one's voters, from the bridge's `polls` and `poll_votes` tables."""
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    try:
+        cursor = conn.cursor()
+        tables = {row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "polls" not in tables:
+            return {"ok": False, "error": "This bridge does not record polls yet"}
+        poll = cursor.execute(
+            "SELECT question, options FROM polls WHERE id = ? AND chat_jid = ?", (message_id, chat_jid)
+        ).fetchone()
+        if not poll:
+            return {"ok": False, "error": "No poll with this id in this chat"}
+        votes = cursor.execute(
+            "SELECT voter, options, timestamp FROM poll_votes WHERE poll_id = ? AND chat_jid = ? ORDER BY timestamp",
+            (message_id, chat_jid),
+        ).fetchall()
+    finally:
+        conn.close()
+    options = json.loads(poll[1])
+    voters: dict[str, list[dict[str, Any]]] = {o: [] for o in options}
+    for voter, chosen, at in votes:
+        for option in json.loads(chosen):
+            voters.setdefault(option, []).append({"phone": voter, "name": get_sender_name(voter), "at": at})
+    return {
+        "ok": True,
+        "question": poll[0],
+        "options": [{"option": o, "votes": len(v), "voters": v} for o, v in voters.items()],
+        "people_voted": sum(1 for _, chosen, _ in votes if json.loads(chosen)),
+    }
 
 
 def mark_messages_read(

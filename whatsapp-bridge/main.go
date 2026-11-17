@@ -245,6 +245,26 @@ func NewMessageStore() (*MessageStore, error) {
 			PRIMARY KEY (call_id, chat_jid)
 		);
 
+		-- polls seen or sent, with their options, so votes (which carry only
+		-- option hashes) can be read back as names
+		CREATE TABLE IF NOT EXISTS polls (
+			id TEXT,
+			chat_jid TEXT,
+			question TEXT,
+			options TEXT,
+			PRIMARY KEY (id, chat_jid)
+		);
+
+		-- each voter's current choice in a poll (a new vote replaces the old)
+		CREATE TABLE IF NOT EXISTS poll_votes (
+			poll_id TEXT,
+			chat_jid TEXT,
+			voter TEXT,
+			options TEXT,
+			timestamp TIMESTAMP,
+			PRIMARY KEY (poll_id, chat_jid, voter)
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_calls_chat ON calls(chat_jid);
 		CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid);
@@ -1218,6 +1238,10 @@ func extractTextContent(msg *waProto.Message) string {
 	// HydratedTemplate.HydratedContentText. Without this branch every
 	// template-sent message (e.g. WABA Connect Hrms_* notifications)
 	// returns "" and the row is silently skipped at the storage gate.
+	if poll := pollCreation(msg); poll != nil {
+		return pollContent(poll)
+	}
+
 	if tpl := msg.GetTemplateMessage(); tpl != nil {
 		if h := tpl.GetHydratedTemplate(); h != nil {
 			if t := h.GetHydratedContentText(); t != "" {
@@ -1457,6 +1481,12 @@ func applyChatEphemeralSettings(msg *waProto.Message, settings ChatEphemeralSett
 		msg.VideoMessage.ContextInfo = mergeEphemeralContextInfo(msg.VideoMessage.GetContextInfo(), settings)
 	case msg.DocumentMessage != nil:
 		msg.DocumentMessage.ContextInfo = mergeEphemeralContextInfo(msg.DocumentMessage.GetContextInfo(), settings)
+	case msg.LocationMessage != nil:
+		msg.LocationMessage.ContextInfo = mergeEphemeralContextInfo(msg.LocationMessage.GetContextInfo(), settings)
+	case msg.ContactMessage != nil:
+		msg.ContactMessage.ContextInfo = mergeEphemeralContextInfo(msg.ContactMessage.GetContextInfo(), settings)
+	case msg.PollCreationMessage != nil:
+		msg.PollCreationMessage.ContextInfo = mergeEphemeralContextInfo(msg.PollCreationMessage.GetContextInfo(), settings)
 	case msg.Conversation != nil:
 		text := msg.GetConversation()
 		msg.Conversation = nil
@@ -2281,6 +2311,8 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	updateChatEphemeralSettingsFromProtocolMessage(messageStore, chatJID, msg.Message, msg.Info.Timestamp.Unix(), logger)
 	handleMessageRevoke(messageStore, msg.Message, chatJID, msg.Info.Timestamp.Unix(), logger)
 	handleMessageEdit(client, messageStore, msg, chatJID, logger)
+	handlePollVote(client, messageStore, msg, chatJID, sender, logger)
+	recordPoll(messageStore, msg.Info.ID, chatJID, msg.Message)
 
 	// Backfill ephemeral state from any regular message's ContextInfo.
 	// EPHEMERAL_SETTING ProtocolMessages and GroupInfo events only fire on
@@ -2714,6 +2746,8 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 	registerOwnMessageEndpoints(mux, auth, client, messageStore)
 	registerAvatarEndpoint(mux, auth, client)
 	registerGroupEndpoint(mux, auth, client, messageStore)
+	registerPollEndpoint(mux, auth, client, messageStore)
+	registerMiscEndpoints(mux, auth, client, messageStore)
 
 	// Health check endpoint
 	mux.HandleFunc("/api/health", auth(func(w http.ResponseWriter, r *http.Request) {
@@ -3977,6 +4011,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 				msgTimestamp := time.Unix(int64(ts), 0)
+				recordPoll(messageStore, msgID, chatJID, msg.Message.GetMessage())
 
 				err = messageStore.StoreMessage(
 					msgID,

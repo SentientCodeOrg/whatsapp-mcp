@@ -64,7 +64,10 @@ from whatsapp import (
     send_reaction as whatsapp_send_reaction,
 )
 from whatsapp import (
-    create_group as whatsapp_create_group,
+    bridge_call,
+)
+from whatsapp import (
+    get_poll_results as whatsapp_get_poll_results,
 )
 
 # Initialize FastMCP server. Env-var handling is deferred to the __main__ block
@@ -429,6 +432,44 @@ def send_reaction(
 
 
 @mcp.tool()
+def edit_message(chat_jid: str, message_id: str, text: str) -> dict[str, Any]:
+    """Change the text of a text message you sent, within 15 minutes of sending
+    (WhatsApp's limit). Everyone in the chat sees it marked as edited.
+
+    Args:
+        chat_jid: The chat the message is in (from list_messages)
+        message_id: The id of your message
+        text: The new text
+    """
+    return bridge_call("POST", "/edit", {"chat_jid": chat_jid, "message_id": message_id, "text": text})
+
+
+@mcp.tool()
+def delete_message(chat_jid: str, message_id: str) -> dict[str, Any]:
+    """Delete a message you sent for everyone, within 48 hours of sending.
+    It cannot be undone; the chat shows "This message was deleted".
+
+    Args:
+        chat_jid: The chat the message is in (from list_messages)
+        message_id: The id of your message
+    """
+    return bridge_call("POST", "/revoke", {"chat_jid": chat_jid, "message_id": message_id})
+
+
+@mcp.tool()
+def request_history(chat_jid: str, count: int = 50) -> dict[str, Any]:
+    """Ask the phone for messages of a chat older than the oldest one stored here.
+    They arrive in the background over the next minute (the phone decides how many);
+    read them with list_messages afterwards.
+
+    Args:
+        chat_jid: The chat to fetch older messages for
+        count: How many older messages to ask for, up to 500 (default 50)
+    """
+    return bridge_call("POST", "/history", {"chat_jid": chat_jid, "count": count})
+
+
+@mcp.tool()
 def create_group(name: str, participants: list[str]) -> dict[str, Any]:
     """Create a new WhatsApp group with this account as admin. Participants are
     added at once and see the group immediately: confirm name and members first.
@@ -439,11 +480,186 @@ def create_group(name: str, participants: list[str]) -> dict[str, Any]:
                       "+39 333 123 4567") or user JIDs, without your own number
 
     Returns:
-        ok, the group "jid" (use it with send_message), "added", and "failed"
-        (people WhatsApp would not add, usually for their privacy settings) with
-        an "invite_link" to send them instead
+        ok, the group "jid" (use it with send_message), "done" (people added), and
+        "failed" (people WhatsApp would not add, usually for their privacy settings)
+        with an "invite_link" to send them instead
     """
-    return whatsapp_create_group(name, participants)
+    return bridge_call("POST", "/group/create", {"name": name, "participants": participants})
+
+
+@mcp.tool()
+def get_group_info(group_jid: str) -> dict[str, Any]:
+    """A group's name, description, settings and members (phone, admin, owner).
+
+    Args:
+        group_jid: The group's JID (…@g.us)
+    """
+    return bridge_call("GET", "/group/info", params={"jid": group_jid})
+
+
+@mcp.tool()
+def update_group_participants(group_jid: str, action: str, participants: list[str]) -> dict[str, Any]:
+    """Add or remove people in a group you administer, or make them admins (promote)
+    or not (demote). People see the change at once: confirm first.
+
+    Args:
+        group_jid: The group's JID (…@g.us)
+        action: "add", "remove", "promote" or "demote"
+        participants: Phone numbers with country code or user JIDs
+
+    Returns:
+        "done", and "failed" with WhatsApp's error code per person; when adding,
+        an "invite_link" for those WhatsApp would not add
+    """
+    return bridge_call("POST", "/group/participants", {"group": group_jid, "action": action, "participants": participants})
+
+
+@mcp.tool()
+def update_group_settings(
+    group_jid: str,
+    name: str | None = None,
+    description: str | None = None,
+    only_admins_send: bool | None = None,
+    only_admins_edit_info: bool | None = None,
+) -> dict[str, Any]:
+    """Change a group's name, description, or who may send messages and edit its
+    info. Pass only what should change; members see each change in the chat.
+
+    Args:
+        group_jid: The group's JID (…@g.us)
+        name: New name, 1-25 characters
+        description: New description ("" clears it)
+        only_admins_send: True so only admins can send messages
+        only_admins_edit_info: True so only admins can change name, description and photo
+    """
+    payload: dict[str, Any] = {"group": group_jid}
+    for key, value in (("name", name), ("description", description),
+                       ("only_admins_send", only_admins_send), ("only_admins_edit_info", only_admins_edit_info)):
+        if value is not None:
+            payload[key] = value
+    return bridge_call("POST", "/group/settings", payload)
+
+
+@mcp.tool()
+def get_group_invite_link(group_jid: str, reset: bool = False) -> dict[str, Any]:
+    """The invite link of a group you administer.
+
+    Args:
+        group_jid: The group's JID (…@g.us)
+        reset: True to revoke the current link and make a new one (the old one stops working)
+    """
+    return bridge_call("GET", "/group/invite", params={"jid": group_jid, "reset": "1" if reset else "0"})
+
+
+@mcp.tool()
+def leave_group(group_jid: str) -> dict[str, Any]:
+    """Leave a group. Members see that you left; you need a new invite to come back.
+
+    Args:
+        group_jid: The group's JID (…@g.us)
+    """
+    return bridge_call("POST", "/group/leave", {"group": group_jid})
+
+
+@mcp.tool()
+def join_group(invite_link: str) -> dict[str, Any]:
+    """Join a group from its invite link (https://chat.whatsapp.com/…). Members see you join.
+
+    Args:
+        invite_link: The invite link, or just its code
+    """
+    return bridge_call("POST", "/group/join", {"link": invite_link})
+
+
+@mcp.tool()
+def send_poll(recipient: str, question: str, options: list[str], multiple_answers: bool = False) -> dict[str, Any]:
+    """Send a poll to a person or group. Read the votes later with get_poll_results.
+
+    Args:
+        recipient: Phone number with country code, or a user or group JID
+        question: The poll's question
+        options: 2 to 12 distinct answers
+        multiple_answers: True to let people pick more than one answer
+
+    Returns:
+        ok, "message_id" and "chat_jid" (pass both to get_poll_results)
+    """
+    return bridge_call("POST", "/poll", {"recipient": recipient, "question": question,
+                                          "options": options, "multiple": multiple_answers})
+
+
+@mcp.tool()
+def get_poll_results(chat_jid: str, message_id: str) -> dict[str, Any]:
+    """Votes on a poll in a chat: each option with who chose it. Works for polls
+    sent or received while the bridge was running (or seen in history sync); votes
+    cast before the bridge saw the poll are missing.
+
+    Args:
+        chat_jid: The chat the poll is in
+        message_id: The poll message's id (from send_poll or list_messages)
+    """
+    return whatsapp_get_poll_results(message_id, chat_jid)
+
+
+@mcp.tool()
+def send_location(recipient: str, latitude: float, longitude: float, name: str = "", address: str = "") -> dict[str, Any]:
+    """Send a map pin.
+
+    Args:
+        recipient: Phone number with country code, or a user or group JID
+        latitude: Latitude in degrees (e.g. 41.9028)
+        longitude: Longitude in degrees (e.g. 12.4964)
+        name: Optional place name shown on the pin
+        address: Optional address shown under the name
+    """
+    return bridge_call("POST", "/send-location", {"recipient": recipient, "latitude": latitude,
+                                                   "longitude": longitude, "name": name, "address": address})
+
+
+@mcp.tool()
+def send_contact(recipient: str, name: str, phone: str) -> dict[str, Any]:
+    """Send a contact card someone can tap to save or message.
+
+    Args:
+        recipient: Phone number with country code, or a user or group JID
+        name: The contact's name as it should appear on the card
+        phone: The contact's phone number with country code
+    """
+    return bridge_call("POST", "/send-contact", {"recipient": recipient, "name": name, "phone": phone})
+
+
+@mcp.tool()
+def check_numbers(phones: list[str]) -> dict[str, Any]:
+    """Whether phone numbers are on WhatsApp, with their "about" text and verified
+    business name when they have one. Nothing is sent to them.
+
+    Args:
+        phones: 1-50 phone numbers with country code
+    """
+    return bridge_call("POST", "/check-numbers", {"phones": phones})
+
+
+@mcp.tool()
+def set_disappearing_timer(chat: str, timer: str) -> dict[str, Any]:
+    """Turn disappearing messages on or off in a chat or group. Everyone in the
+    chat sees the change; new messages then vanish after the timer.
+
+    Args:
+        chat: Phone number with country code, or a user or group JID
+        timer: "off", "24h", "7d" or "90d"
+    """
+    return bridge_call("POST", "/disappearing", {"chat": chat, "timer": timer})
+
+
+@mcp.tool()
+def block_contact(contact: str, block: bool = True) -> dict[str, Any]:
+    """Block someone (they can no longer message or call you), or unblock them.
+
+    Args:
+        contact: Phone number with country code, or a user JID
+        block: True to block, False to unblock
+    """
+    return bridge_call("POST", "/block", {"contact": contact, "action": "block" if block else "unblock"})
 
 
 @mcp.tool()
