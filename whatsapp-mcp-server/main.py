@@ -63,6 +63,9 @@ from whatsapp import (
 from whatsapp import (
     send_reaction as whatsapp_send_reaction,
 )
+from whatsapp import (
+    create_group as whatsapp_create_group,
+)
 
 # Initialize FastMCP server. Env-var handling is deferred to the __main__ block
 # so importing this module never parses env vars or exits the process.
@@ -423,6 +426,24 @@ def send_reaction(
     """
     success, status_message = whatsapp_send_reaction(recipient, message_id, emoji, from_me, sender_jid)
     return {"success": success, "message": status_message}
+
+
+@mcp.tool()
+def create_group(name: str, participants: list[str]) -> dict[str, Any]:
+    """Create a new WhatsApp group with this account as admin. Participants are
+    added at once and see the group immediately: confirm name and members first.
+
+    Args:
+        name: Group name, 1-25 characters
+        participants: Phone numbers with country code (e.g. "393331234567" or
+                      "+39 333 123 4567") or user JIDs, without your own number
+
+    Returns:
+        ok, the group "jid" (use it with send_message), "added", and "failed"
+        (people WhatsApp would not add, usually for their privacy settings) with
+        an "invite_link" to send them instead
+    """
+    return whatsapp_create_group(name, participants)
 
 
 @mcp.tool()

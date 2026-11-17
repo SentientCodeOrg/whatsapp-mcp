@@ -1435,6 +1435,23 @@ def send_reaction(
         return False, f"Unexpected error: {str(e)}"
 
 
+def create_group(name: str, participants: list[str]) -> dict[str, Any]:
+    """Create a WhatsApp group through the bridge; returns the bridge's JSON."""
+    try:
+        response = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/group/create",
+            json={"name": name, "participants": participants},
+            headers=_bridge_headers(),
+            timeout=45,
+        )
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"HTTP {response.status_code} - {response.text}"}
+    except requests.RequestException as e:
+        return {"ok": False, "error": f"Request error: {e}"}
+
+
 def mark_messages_read(
     message_ids: list[str],
     chat_jid: str,

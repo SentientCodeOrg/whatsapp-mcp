@@ -2713,6 +2713,7 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 	registerHistoryEndpoint(mux, auth, client, messageStore)
 	registerOwnMessageEndpoints(mux, auth, client, messageStore)
 	registerAvatarEndpoint(mux, auth, client)
+	registerGroupEndpoint(mux, auth, client, messageStore)
 
 	// Health check endpoint
 	mux.HandleFunc("/api/health", auth(func(w http.ResponseWriter, r *http.Request) {
