@@ -29,6 +29,10 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 > | `/api/send` answers within 15 s even when WhatsApp doesn't | not offered yet |
 > | `/api/typing` can show us online while the typing indicator runs (`online`) | not offered yet |
 > | Create groups (`POST /api/group/create`, `create_group` tool; people WhatsApp won't add come back with an invite link) | overlaps [#302](https://github.com/verygoodplugins/whatsapp-mcp/pull/302); MCP tool to offer after it |
+> | Group admin: members (add, remove, admins), name, description, who may send or edit, invite link, leave, join (`/api/group/*`) | overlaps [#303](https://github.com/verygoodplugins/whatsapp-mcp/pull/303) and [#258](https://github.com/verygoodplugins/whatsapp-mcp/pull/258) |
+> | Polls: send one, store incoming ones, decrypt votes (`send_poll`, `get_poll_results`) | not offered yet ([#219](https://github.com/verygoodplugins/whatsapp-mcp/issues/219)) |
+> | Send a location or a contact card; check numbers on WhatsApp; disappearing timer; block and unblock | not offered yet |
+> | MCP tools for the bridge's edit, delete-for-everyone and on-demand history (`edit_message`, `delete_message`, `request_history`) | not offered yet |
 
 <p align="center">
   <a href="https://github.com/user-attachments/assets/9475af1d-2369-4315-9ccc-823dba2c5c32"><strong>Watch the WhatsApp MCP demo video</strong></a>
