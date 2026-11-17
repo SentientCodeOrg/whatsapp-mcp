@@ -31,6 +31,7 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 > | Create groups (`POST /api/group/create`, `create_group` tool; people WhatsApp won't add come back with an invite link) | overlaps [#302](https://github.com/verygoodplugins/whatsapp-mcp/pull/302); MCP tool to offer after it |
 > | Group admin: members (add, remove, admins), name, description, who may send or edit, invite link, leave, join (`/api/group/*`) | overlaps [#303](https://github.com/verygoodplugins/whatsapp-mcp/pull/303) and [#258](https://github.com/verygoodplugins/whatsapp-mcp/pull/258) |
 > | Polls: send one, store incoming ones, decrypt votes (`send_poll`, `get_poll_results`) | not offered yet ([#219](https://github.com/verygoodplugins/whatsapp-mcp/issues/219)) |
+> | Group photo: change or remove it; any JPEG, PNG or GIF is cropped and scaled to 640×640 (`set_group_photo`) | overlaps [#303](https://github.com/verygoodplugins/whatsapp-mcp/pull/303) |
 > | Send a location or a contact card; check numbers on WhatsApp; disappearing timer; block and unblock | not offered yet |
 > | MCP tools for the bridge's edit, delete-for-everyone and on-demand history (`edit_message`, `delete_message`, `request_history`) | not offered yet |
 
